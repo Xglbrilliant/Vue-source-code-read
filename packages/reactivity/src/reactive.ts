@@ -15,7 +15,10 @@ import type { RawSymbol, Ref, UnwrapRefSimple } from './ref'
 import { ReactiveFlags } from './constants'
 import { warn } from './warning'
 
-export interface Target {
+// ? 该文件中定义了以下方法：
+// reactive/shallowReactive、readonly/shallowReadonly、isReactive/isReadonly/isShallow/isProxy、toRaw/markRaw/toReactive/toReadonly
+
+export interface Target { // \?:->接口的可选属性
   [ReactiveFlags.SKIP]?: boolean
   [ReactiveFlags.IS_REACTIVE]?: boolean
   [ReactiveFlags.IS_READONLY]?: boolean
@@ -35,13 +38,13 @@ export const shallowReadonlyMap: WeakMap<Target, any> = new WeakMap<
 >()
 
 enum TargetType {
-  INVALID = 0,
-  COMMON = 1,
-  COLLECTION = 2,
+  INVALID = 0, // 其它类型
+  COMMON = 1, // Object、Array
+  COLLECTION = 2, // Map、Set、WeakMap、WeakSet
 }
 
 function targetTypeMap(rawType: string) {
-  switch (rawType) {
+  switch (rawType) { // case穿透，common表示Object、Array，collection表示Map、Set、WeakMap、WeakSet.
     case 'Object':
     case 'Array':
       return TargetType.COMMON
@@ -55,7 +58,7 @@ function targetTypeMap(rawType: string) {
   }
 }
 
-function getTargetType(value: Target) {
+function getTargetType(value: Target) { // 只要对象有ReactiveFlags.SKIP属性或者不可扩展，则返回目标类型为无效-0；否则返回目标类型为1或2
   return value[ReactiveFlags.SKIP] || !Object.isExtensible(value)
     ? TargetType.INVALID
     : targetTypeMap(toRawType(value))
@@ -254,15 +257,20 @@ export function shallowReadonly<T extends object>(target: T): Readonly<T> {
   )
 }
 
+// ! reactive核心函数，针对不同情况进行以下处理：
+// 1.如果target不是对象，则返回target
+// 2.如果target是Proxy，则返回target
+// 3.如果target已经被代理过，则返回该代理
+// 4.如果target是Object/Array 或 Set/Map/WeakSet/WeakMap类型，则根据不同类型创建代理对象进行拦截操作
 function createReactiveObject(
   target: Target,
   isReadonly: boolean,
   baseHandlers: ProxyHandler<any>,
   collectionHandlers: ProxyHandler<any>,
-  proxyMap: WeakMap<Target, any>,
+  proxyMap: WeakMap<Target, any>, // 阅读Vue.js设计与实现可以发现设置为WeakMap类型的好处
 ) {
-  if (!isObject(target)) {
-    if (__DEV__) {
+  if (!isObject(target)) { // ! 1、reactive只能将对象转换为响应式
+    if (__DEV__) { // 开发环境下才提示警告,减小生产环境体积
       warn(
         `value cannot be made ${isReadonly ? 'readonly' : 'reactive'}: ${String(
           target,
@@ -273,27 +281,32 @@ function createReactiveObject(
   }
   // target is already a Proxy, return it.
   // exception: calling readonly() on a reactive object
-  if (
+  if ( // ! 2、判断target是否是Proxy
     target[ReactiveFlags.RAW] &&
-    !(isReadonly && target[ReactiveFlags.IS_REACTIVE])
+    // ReactiveFlags.RAW 标志用于存储原始对象的引用，通常在对象被转换成响应式对象时设置。若该属性存在，说明target已通过reactive或类似方法处理过，其RAW属性指向未被代理的原始对象。
+    !(isReadonly && target[ReactiveFlags.IS_REACTIVE]) // 如果源对象target的__v_raw属性为真，则返回target（isReadonly字段是false）
   ) {
     return target
   }
-  // target already has corresponding Proxy
-  const existingProxy = proxyMap.get(target)
-  if (existingProxy) {
+  // ! 3、target already has corresponding Proxy
+  const existingProxy = proxyMap.get(target) // WeakMap中键名是对象名称，键值是Map（键名是对象属性，键值是Set——存放依赖函数）
+  if (existingProxy) { // 若根据键名target获取到值，则说明target已经被代理过，则返回该代理
     return existingProxy
   }
   // only specific value types can be observed.
-  const targetType = getTargetType(target)
-  if (targetType === TargetType.INVALID) {
+  // ! 4、根据target的类型，判断是否为Object/Array 或 Set/WeakSet/Map/WeakMap类型 或其它类型来决定是否进行代理和对哪些操作进行拦截
+  const targetType = getTargetType(target) // targetType为数字类型，0/1/2
+  if (targetType === TargetType.INVALID) { // 如果target类型不是Object/Array/Set/WeakSet/Map/WeakMap，则返回target
     return target
   }
   const proxy = new Proxy(
     target,
-    targetType === TargetType.COLLECTION ? collectionHandlers : baseHandlers,
+    // collectionHandlers用于拦截Set/Map/WeakSet/WeakMap类型的对象,baseHandlers用于拦截Object/Array类型的对象
+    // ./baseHandlers文件中baseHandlers设置了五种拦截操作：get/set/has/deleteProperty/ownKeys
+    // ./collectionHandlers文件中mutableCollectionHandlers仅设置了一种拦截操作：get
+    targetType === TargetType.COLLECTION ? collectionHandlers : baseHandlers, // 拦截器
   )
-  proxyMap.set(target, proxy)
+  proxyMap.set(target, proxy) // 在WeakMap中添加新的键值对，并返回键值——即代理对象
   return proxy
 }
 
@@ -333,11 +346,11 @@ export function isReactive(value: unknown): boolean {
  * @param value - The value to check.
  * @see {@link https://vuejs.org/api/reactivity-utilities.html#isreadonly}
  */
-export function isReadonly(value: unknown): boolean {
-  return !!(value && (value as Target)[ReactiveFlags.IS_READONLY])
+export function isReadonly(value: unknown): boolean { // 判断是否为readonly的原理是判断该值的__v_isReadonly属性是否为真，为真则是readonly类型
+  return !!(value && (value as Target)[ReactiveFlags.IS_READONLY]) // 类型断言为Target类型，并判断__v_isReadonly属性是否为真
 }
 
-export function isShallow(value: unknown): boolean {
+export function isShallow(value: unknown): boolean { // 同上，判断是否为浅层响应式的原理是判断该值的__v_isShallow属性是否为真
   return !!(value && (value as Target)[ReactiveFlags.IS_SHALLOW])
 }
 
